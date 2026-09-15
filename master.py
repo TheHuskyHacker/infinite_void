@@ -574,22 +574,46 @@ def main():
     else:
         auth_secret = args.password
 
-    # Connect
+    # Connect — try plain LDAP first, auto-fallback to LDAPS
     info(f"Six Eyes active. Target mapped at {args.dc_ip}...")
 
-    if args.ldaps:
-        tls_config = Tls(validate=ssl.CERT_NONE)
-        server = Server(args.dc_ip, port=636, use_ssl=True, tls=tls_config, get_info=ALL)
-    else:
-        server = Server(args.dc_ip, get_info=ALL)
+    conn = None
+    methods = []
 
-    try:
-        conn = Connection(server, user=user_dn, password=auth_secret,
-                         authentication=NTLM, auto_bind=True)
-        print(f"\n  {LIMITLESS_PURPLE}{BOLD}[+] Domain Expansion: Muryokusho!{RESET}")
-        print(f"  {LIMITLESS_PURPLE}    The target is frozen in Infinite Void.{RESET}\n")
-    except Exception as e:
-        warn(f"Domain Expansion collapsed! {e}")
+    if args.ldaps:
+        # User explicitly asked for LDAPS — only try that
+        methods = [("LDAPS (port 636)", True)]
+    else:
+        # Try plain first, fallback to LDAPS
+        methods = [("LDAP (port 389)", False), ("LDAPS (port 636)", True)]
+
+    for method_name, use_ssl in methods:
+        try:
+            info(f"Trying {method_name}...")
+            if use_ssl:
+                tls_config = Tls(validate=ssl.CERT_NONE)
+                server = Server(args.dc_ip, port=636, use_ssl=True, tls=tls_config, get_info=ALL)
+            else:
+                server = Server(args.dc_ip, get_info=ALL)
+
+            conn = Connection(server, user=user_dn, password=auth_secret,
+                             authentication=NTLM, auto_bind=True)
+            print(f"\n  {LIMITLESS_PURPLE}{BOLD}[+] Domain Expansion: Muryokusho!{RESET}")
+            print(f"  {LIMITLESS_PURPLE}    Connected via {method_name}.{RESET}")
+            print(f"  {LIMITLESS_PURPLE}    The target is frozen in Infinite Void.{RESET}\n")
+            break
+        except Exception as e:
+            err_str = str(e).lower()
+            if "strongerauthreq" in err_str or "stronger" in err_str:
+                if not use_ssl:
+                    warn(f"{method_name} rejected — DC requires encryption. Trying LDAPS...")
+                    continue
+            warn(f"Domain Expansion collapsed on {method_name}! {e}")
+            conn = None
+
+    if conn is None:
+        warn("All connection methods failed. Check creds, domain, and DC IP.")
+        info("Manual test: ldapsearch -x -H ldaps://<DC_IP> -D 'DOMAIN\\\\user' -w 'pass' -b '' -s base")
         sys.exit(1)
 
     start_time = time.time()
